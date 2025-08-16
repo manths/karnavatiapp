@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "414520789249",
+    "project_id": "karnavati-nagar-app",
+    "storage_bucket": "karnavati-nagar-app.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:414520789249:android:9f86bbae6fe38d6c75b300",
+        "android_client_info": {
+          "package_name": "com.karnavatiapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCpgs2Xmxx-SGv6UajH6_6TSdVvG9WfRIw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
