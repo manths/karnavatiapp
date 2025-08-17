@@ -8,10 +8,11 @@ import {
 } from 'react-native';
 import { Colors } from '../constants/colors';
 import { Layout } from '../constants/layout';
+import { USER_STATUS } from '../constants/userRoles';
 
 const { width, height } = Dimensions.get('window');
 
-const SplashScreen = ({ userName, onComplete }) => {
+const SplashScreen = ({ userName, userStatus, onComplete }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.8)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
@@ -46,6 +47,40 @@ const SplashScreen = ({ userName, onComplete }) => {
     return () => clearTimeout(timer);
   }, [fadeAnim, scaleAnim, slideAnim, onComplete]);
 
+  const getWelcomeMessage = () => {
+    if (!userName) {
+      return {
+        welcome: 'Welcome',
+        subtitle: 'to the Karnavati Apartment',
+      };
+    }
+
+    switch (userStatus) {
+      case USER_STATUS.PENDING:
+        return {
+          welcome: `Welcome ${userName}`,
+          subtitle: 'Your account is pending approval',
+        };
+      case USER_STATUS.APPROVED:
+        return {
+          welcome: `Welcome back ${userName}`,
+          subtitle: 'to the Karnavati Apartment',
+        };
+      case USER_STATUS.REJECTED:
+        return {
+          welcome: `Hello ${userName}`,
+          subtitle: 'Please contact secretary for assistance',
+        };
+      default:
+        return {
+          welcome: `Welcome ${userName}`,
+          subtitle: 'to the Karnavati Apartment',
+        };
+    }
+  };
+
+  const welcomeMessage = getWelcomeMessage();
+
   return (
     <View style={styles.container}>
       <Animated.View
@@ -65,11 +100,11 @@ const SplashScreen = ({ userName, onComplete }) => {
         </View>
         
         <Text style={styles.welcomeText}>
-          Welcome{userName ? ` ${userName}` : ''}
+          {welcomeMessage.welcome}
         </Text>
         
         <Text style={styles.apartmentText}>
-          to the Karnavati Apartment
+          {welcomeMessage.subtitle}
         </Text>
         
         <View style={styles.dotsContainer}>

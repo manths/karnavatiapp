@@ -8,6 +8,9 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Modal,
+  FlatList,
+  TouchableOpacity,
 } from 'react-native';
 import {
   TextInput,
@@ -16,11 +19,14 @@ import {
   Title,
   HelperText,
   ActivityIndicator,
+  List,
+  Divider,
 } from 'react-native-paper';
-import { Picker } from '@react-native-picker/picker';
 import { Colors } from '../constants/colors';
 import { Layout } from '../constants/layout';
+import { USER_STATUS, USER_ROLES } from '../constants/userRoles';
 import { validateUsername, validateMobileNumber, validatePassword } from '../utils/validation';
+import { SafeAccess, SafeAsync, SafeConsole } from '../utils/safeAccess';
 import StorageService from '../services/storage';
 import DatabaseService from '../services/database';
 import { useToast } from '../context/ToastContext';
@@ -44,6 +50,10 @@ const AuthScreen = ({ navigation, route }) => {
   // Validation errors
   const [errors, setErrors] = useState({});
 
+  // Dropdown states
+  const [showCountryCodeModal, setShowCountryCodeModal] = useState(false);
+  const [showHouseNumberModal, setShowHouseNumberModal] = useState(false);
+
   // Generate house numbers: 1,2,3,101,102,103,104,105,106,201,202...till 403
   const generateHouseNumbers = () => {
     const numbers = ['1', '2', '3']; // Ground floor
@@ -56,7 +66,11 @@ const AuthScreen = ({ navigation, route }) => {
       }
     }
     
-    return numbers.map(num => ({ label: `House ${num}`, value: num }));
+    return numbers.map(num => ({ 
+      label: `${buildingId}-${num}`, 
+      value: num,
+      displayText: `${buildingId}-${num}`
+    }));
   };
 
   const houseNumbers = generateHouseNumbers();
@@ -76,13 +90,19 @@ const AuthScreen = ({ navigation, route }) => {
   const checkExistingSession = async () => {
     try {
       // Check for active session first
-      const activeSession = await StorageService.getActiveSession();
+      const activeSession = await SafeAsync.execute(
+        StorageService.getActiveSession,
+        null
+      );
       
       if (activeSession) {
         // User has an active session, get user data and navigate to main immediately
-        const userData = await StorageService.getUserData();
+        const userData = await SafeAsync.execute(
+          StorageService.getUserData,
+          null
+        );
         if (userData) {
-          console.log('Auto-login successful for user:', userData.username);
+          SafeConsole.log('Auto-login successful for user:', SafeAccess.get(userData, 'username', 'unknown'));
           // Use replace to prevent going back to auth screen
           navigation.replace('Main');
           return;
@@ -90,29 +110,35 @@ const AuthScreen = ({ navigation, route }) => {
       }
 
       // No active session, check for saved credentials for easy login
-      const credentials = await StorageService.getCredentials();
-      const userData = await StorageService.getUserData();
+      const credentials = await SafeAsync.execute(
+        StorageService.getCredentials,
+        null
+      );
+      const userData = await SafeAsync.execute(
+        StorageService.getUserData,
+        null
+      );
       
       if (credentials && userData) {
         // User exists, pre-fill form and set to login mode
-        console.log('Loading user data:', userData);
-        setUsername(userData.username || '');
-        setCountryCode(userData.countryCode || '+91');
-        setMobileNumber(userData.mobileNumber || '');
+        SafeConsole.log('Loading user data:', userData);
+        setUsername(SafeAccess.get(userData, 'username', ''));
+        setCountryCode(SafeAccess.get(userData, 'countryCode', '+91'));
+        setMobileNumber(SafeAccess.get(userData, 'mobileNumber', ''));
         setIsNewUser(false); // Set to login mode
         setHasExistingCredentials(true); // Mark that we have existing credentials
-        console.log('Pre-filled values:', {
-          username: userData.username,
-          countryCode: userData.countryCode,
-          mobileNumber: userData.mobileNumber
+        SafeConsole.log('Pre-filled values:', {
+          username: SafeAccess.get(userData, 'username'),
+          countryCode: SafeAccess.get(userData, 'countryCode'),
+          mobileNumber: SafeAccess.get(userData, 'mobileNumber')
         });
       } else {
-        console.log('No saved credentials found - switching to signup mode');
+        SafeConsole.log('No saved credentials found - switching to signup mode');
         setIsNewUser(true); // Switch to signup mode if no saved credentials
         setHasExistingCredentials(false);
       }
     } catch (error) {
-      console.error('Error checking existing session:', error);
+      SafeConsole.error('Error checking existing session:', error);
     } finally {
       // Only set loading to false if we're not navigating away
       setInitialLoading(false);
@@ -129,8 +155,8 @@ const AuthScreen = ({ navigation, route }) => {
       }
 
       const mobileValidation = validateMobileNumber(mobileNumber);
-      if (!mobileValidation) {
-        newErrors.mobileNumber = 'Please enter a valid mobile number';
+      if (!mobileValidation.isValid) {
+        newErrors.mobileNumber = mobileValidation.message;
       }
 
       // House number validation for new users
@@ -175,7 +201,7 @@ const AuthScreen = ({ navigation, route }) => {
       return;
     }
 
-    // Create new user
+    // Create new user with pending status
     const userData = {
       username,
       countryCode,
@@ -183,6 +209,8 @@ const AuthScreen = ({ navigation, route }) => {
       houseNumber,
       buildingId,
       password, // Note: In production, hash this password
+      role: USER_ROLES.MEMBER, // Default role is member
+      status: USER_STATUS.PENDING, // Default status is pending approval
     };
 
     const result = await DatabaseService.createUser(userData);
@@ -204,8 +232,10 @@ const AuthScreen = ({ navigation, route }) => {
       // Create session for automatic login
       await StorageService.createSession(fullUserData);
 
-      showSuccess('Account created successfully! Welcome to Karnavati Apartment!');
-      setTimeout(() => navigation.replace('Main'), 1000);
+      showSuccess('Account request submitted successfully! Please wait for secretary approval.');
+      
+      // Navigate to pending screen instead of main app
+      setTimeout(() => navigation.replace('AccountPending'), 1000);
     } else {
       throw new Error(result.error);
     }
@@ -226,8 +256,29 @@ const AuthScreen = ({ navigation, route }) => {
       return;
     }
 
-    // Save/update user data
-    await StorageService.saveUserData(result.data);
+    // Check user status and role with safe fallbacks
+    const userStatus = SafeAccess.get(result.data, 'status', USER_STATUS.PENDING);
+    const userRole = SafeAccess.get(result.data, 'role', USER_ROLES.MEMBER);
+    
+    SafeConsole.log('Login attempt - User data:', {
+      username: SafeAccess.get(result.data, 'username'),
+      role: userRole,
+      status: userStatus,
+      id: SafeAccess.get(result.data, 'id')
+    });
+    
+    if (userStatus === USER_STATUS.REJECTED) {
+      showError('Your account request has been rejected. Please contact the secretary.');
+      return;
+    }
+
+    // Save/update user data with safe fallbacks
+    const userDataToSave = {
+      ...result.data,
+      status: userStatus,
+      role: userRole,
+    };
+    await StorageService.saveUserData(userDataToSave);
 
     // Update credentials
     await StorageService.saveCredentials({
@@ -239,8 +290,37 @@ const AuthScreen = ({ navigation, route }) => {
     // Create session for automatic login
     await StorageService.createSession(result.data);
 
-    showSuccess(`Welcome back${result.data.username ? `, ${result.data.username}` : ''}!`);
-    setTimeout(() => navigation.replace('Main'), 1000);
+    // Navigate based on user status - Admin users bypass approval
+    if (userRole === USER_ROLES.ADMIN) {
+      const welcomeMessage = SafeAccess.get(result.data, 'firstLogin', true) !== false 
+        ? `Welcome Admin${SafeAccess.get(result.data, 'username') ? `, ${SafeAccess.get(result.data, 'username')}` : ''}!`
+        : `Welcome back Admin${SafeAccess.get(result.data, 'username') ? `, ${SafeAccess.get(result.data, 'username')}` : ''}!`;
+      
+      showSuccess(welcomeMessage);
+      
+      // Mark first login as complete for admin
+      if (SafeAccess.get(result.data, 'firstLogin', true) !== false) {
+        await DatabaseService.updateUser(SafeAccess.get(result.data, 'id'), { firstLogin: false });
+      }
+      
+      setTimeout(() => navigation.replace('Main'), 1000);
+    } else if (userStatus === USER_STATUS.PENDING) {
+      showSuccess('Logged in successfully. Your account is pending approval.');
+      setTimeout(() => navigation.replace('AccountPending'), 1000);
+    } else if (userStatus === USER_STATUS.APPROVED) {
+      const welcomeMessage = SafeAccess.get(result.data, 'firstLogin', true) !== false 
+        ? `Your account has been approved! Welcome${SafeAccess.get(result.data, 'username') ? `, ${SafeAccess.get(result.data, 'username')}` : ''}!`
+        : `Welcome back${SafeAccess.get(result.data, 'username') ? `, ${SafeAccess.get(result.data, 'username')}` : ''}!`;
+      
+      showSuccess(welcomeMessage);
+      
+      // Mark first login as complete
+      if (SafeAccess.get(result.data, 'firstLogin', true) !== false) {
+        await DatabaseService.updateUser(SafeAccess.get(result.data, 'id'), { firstLogin: false });
+      }
+      
+      setTimeout(() => navigation.replace('Main'), 1000);
+    }
   };
 
   if (initialLoading) {
@@ -293,31 +373,34 @@ const AuthScreen = ({ navigation, route }) => {
                   </HelperText>
 
                   <View style={styles.mobileContainer}>
-                    <View style={styles.countryCodeContainer}>
-                      <Picker
-                        selectedValue={countryCode}
-                        onValueChange={setCountryCode}
-                        style={styles.countryCodePicker}
+                    <View style={styles.countryCodeWrapper}>
+                      <Text style={styles.fieldLabel}>Country</Text>
+                      <TouchableOpacity 
+                        style={styles.countryCodeContainer}
+                        onPress={() => setShowCountryCodeModal(true)}
                       >
-                        {countryCodes.map(code => (
-                          <Picker.Item 
-                            key={code.value} 
-                            label={code.label} 
-                            value={code.value} 
-                          />
-                        ))}
-                      </Picker>
+                        <View style={styles.countryCodePicker}>
+                          <Text style={styles.countryCodeText}>
+                            {countryCode}
+                          </Text>
+                          <Text style={styles.dropdownIcon}>▼</Text>
+                        </View>
+                      </TouchableOpacity>
                     </View>
                     
-                    <TextInput
-                      label="Mobile Number"
-                      value={mobileNumber}
-                      onChangeText={setMobileNumber}
-                      mode="outlined"
-                      keyboardType="numeric"
-                      style={styles.mobileInput}
-                      error={!!errors.mobileNumber}
-                    />
+                    <View style={styles.mobileNumberWrapper}>
+                      <Text style={styles.fieldLabel}>Mobile Number</Text>
+                      <TextInput
+                        value={mobileNumber}
+                        onChangeText={setMobileNumber}
+                        mode="outlined"
+                        keyboardType="numeric"
+                        style={styles.mobileInput}
+                        placeholder="Enter 10-digit mobile number"
+                        error={!!errors.mobileNumber}
+                        maxLength={10}
+                      />
+                    </View>
                   </View>
                   <HelperText type="error" visible={!!errors.mobileNumber}>
                     {errors.mobileNumber}
@@ -325,22 +408,16 @@ const AuthScreen = ({ navigation, route }) => {
 
                   <View style={styles.houseNumberContainer}>
                     <Text style={styles.fieldLabel}>House Number</Text>
-                    <View style={styles.pickerContainer}>
-                      <Picker
-                        selectedValue={houseNumber}
-                        onValueChange={setHouseNumber}
-                        style={styles.houseNumberPicker}
-                      >
-                        <Picker.Item label="Select your house number" value="" />
-                        {houseNumbers.map(house => (
-                          <Picker.Item 
-                            key={house.value} 
-                            label={house.label} 
-                            value={house.value} 
-                          />
-                        ))}
-                      </Picker>
-                    </View>
+                    <TouchableOpacity 
+                      style={styles.pickerContainer}
+                      onPress={() => setShowHouseNumberModal(true)}
+                    >
+                      <View style={styles.houseNumberPicker}>
+                        <Text style={styles.houseNumberText}>
+                          {houseNumber ? `${buildingId}-${houseNumber}` : 'Select your house number'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
                   </View>
                   <HelperText type="error" visible={!!errors.houseNumber}>
                     {errors.houseNumber}
@@ -368,34 +445,31 @@ const AuthScreen = ({ navigation, route }) => {
 
                   <View style={styles.mobileContainer}>
                     {!hasExistingCredentials && (
-                      <View style={styles.countryCodeContainer}>
-                        <Picker
-                          selectedValue={countryCode}
-                          onValueChange={setCountryCode}
-                          style={styles.countryCodePicker}
-                        >
-                          {countryCodes.map(code => (
-                            <Picker.Item 
-                              key={code.value} 
-                              label={code.label} 
-                              value={code.value} 
-                            />
-                          ))}
-                        </Picker>
-                      </View>
+                      <TouchableOpacity 
+                        style={styles.countryCodeContainer}
+                        onPress={() => setShowCountryCodeModal(true)}
+                      >
+                        <View style={styles.countryCodePicker}>
+                          <Text style={styles.countryCodeText}>
+                            {countryCodes.find(code => code.value === countryCode)?.label || '+91'}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
                     )}
                     
-                    <TextInput
-                      label="Mobile Number"
-                      value={hasExistingCredentials ? (mobileNumber ? `${countryCode} ${mobileNumber}` : '') : mobileNumber}
-                      onChangeText={setMobileNumber}
-                      mode="outlined"
-                      keyboardType="numeric"
-                      style={hasExistingCredentials ? styles.input : styles.mobileInput}
-                      editable={!hasExistingCredentials}
-                      right={hasExistingCredentials && mobileNumber ? <TextInput.Icon icon="check" /> : null}
-                      error={!!errors.mobileNumber}
-                    />
+                    <View style={hasExistingCredentials ? styles.input : styles.mobileNumberWrapper}>
+                      <TextInput
+                        label="Mobile Number"
+                        value={hasExistingCredentials ? (mobileNumber ? `${countryCode} ${mobileNumber}` : '') : mobileNumber}
+                        onChangeText={setMobileNumber}
+                        mode="outlined"
+                        keyboardType="numeric"
+                        style={styles.mobileInput}
+                        editable={!hasExistingCredentials}
+                        right={hasExistingCredentials && mobileNumber ? <TextInput.Icon icon="check" /> : null}
+                        error={!!errors.mobileNumber}
+                      />
+                    </View>
                   </View>
                   {!hasExistingCredentials && (
                     <HelperText type="error" visible={!!errors.mobileNumber}>
@@ -454,6 +528,82 @@ const AuthScreen = ({ navigation, route }) => {
           </Card>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Country Code Modal */}
+      <Modal
+        visible={showCountryCodeModal}
+        animationType="slide"
+        onRequestClose={() => setShowCountryCodeModal(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Title style={styles.modalTitle}>Select Country Code</Title>
+            <Button 
+              onPress={() => setShowCountryCodeModal(false)}
+              mode="text"
+            >
+              Cancel
+            </Button>
+          </View>
+          <FlatList
+            data={countryCodes}
+            keyExtractor={(item) => item.value}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.modalItem}
+                onPress={() => {
+                  setCountryCode(item.value);
+                  setShowCountryCodeModal(false);
+                }}
+              >
+                <Text style={styles.modalItemText}>{item.label}</Text>
+                {countryCode === item.value && (
+                  <Text style={styles.selectedIndicator}>✓</Text>
+                )}
+              </TouchableOpacity>
+            )}
+          />
+        </SafeAreaView>
+      </Modal>
+
+      {/* House Number Modal */}
+      <Modal
+        visible={showHouseNumberModal}
+        animationType="slide"
+        onRequestClose={() => setShowHouseNumberModal(false)}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <Title style={styles.modalTitle}>Select House Number</Title>
+            <Button 
+              onPress={() => setShowHouseNumberModal(false)}
+              mode="text"
+            >
+              Cancel
+            </Button>
+          </View>
+          <FlatList
+            data={houseNumbers}
+            keyExtractor={(item) => item.value}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={styles.modalItem}
+                onPress={() => {
+                  setHouseNumber(item.value);
+                  setShowHouseNumberModal(false);
+                }}
+              >
+                <Text style={styles.modalItemText}>{item.displayText}</Text>
+                {houseNumber === item.value && (
+                  <Text style={styles.selectedIndicator}>✓</Text>
+                )}
+              </TouchableOpacity>
+            )}
+            numColumns={2}
+            columnWrapperStyle={styles.modalRow}
+          />
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 };
@@ -509,21 +659,40 @@ const styles = StyleSheet.create({
   },
   mobileContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end',
     marginBottom: Layout.spacing.xs,
+    gap: Layout.spacing.md,
+  },
+  countryCodeWrapper: {
+    width: 100,
   },
   countryCodeContainer: {
-    width: 100,
-    marginRight: Layout.spacing.sm,
     borderWidth: 1,
     borderColor: Colors.lightGray,
-    borderRadius: Layout.borderRadius.sm,
+    borderRadius: Layout.borderRadius.md,
+    backgroundColor: Colors.surface,
+    height: 56,
   },
   countryCodePicker: {
     height: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Layout.spacing.md,
+  },
+  countryCodeText: {
+    fontSize: Layout.fontSize.md,
+    color: Colors.text,
+    fontWeight: '500',
+  },
+  dropdownIcon: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+  },
+  mobileNumberWrapper: {
+    flex: 1,
   },
   mobileInput: {
-    flex: 1,
     backgroundColor: Colors.surface,
   },
   houseNumberContainer: {
@@ -561,6 +730,59 @@ const styles = StyleSheet.create({
   switchButtonText: {
     fontSize: Layout.fontSize.sm,
     color: Colors.primary,
+  },
+  // New dropdown styles
+  countryCodeText: {
+    fontSize: Layout.fontSize.md,
+    color: Colors.text,
+    paddingHorizontal: Layout.spacing.sm,
+    paddingVertical: Layout.spacing.md,
+  },
+  houseNumberText: {
+    fontSize: Layout.fontSize.md,
+    color: Colors.text,
+    paddingHorizontal: Layout.spacing.sm,
+    paddingVertical: Layout.spacing.md,
+  },
+  // Modal styles
+  modalContainer: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: Layout.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.lightGray,
+  },
+  modalTitle: {
+    fontSize: Layout.fontSize.lg,
+    fontWeight: 'bold',
+    color: Colors.primary,
+  },
+  modalItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: Layout.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.lightGray,
+    flex: 1,
+    margin: Layout.spacing.xs,
+  },
+  modalItemText: {
+    fontSize: Layout.fontSize.md,
+    color: Colors.text,
+  },
+  selectedIndicator: {
+    fontSize: Layout.fontSize.lg,
+    color: Colors.primary,
+    fontWeight: 'bold',
+  },
+  modalRow: {
+    justifyContent: 'space-around',
   },
 });
 

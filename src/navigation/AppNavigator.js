@@ -5,6 +5,8 @@ import { Alert, Linking } from 'react-native';
 
 import BuildingSelectionScreen from '../screens/BuildingSelectionScreen';
 import AuthScreen from '../screens/AuthScreen';
+import AccountPendingScreen from '../screens/AccountPendingScreen';
+import AccountRequestsScreen from '../screens/AccountRequestsScreen';
 import MainDrawerNavigator from './MainDrawerNavigator';
 import TicketDetailsScreen from '../screens/TicketDetailsScreen';
 import DatabaseService from '../services/database';
@@ -97,6 +99,25 @@ const AppNavigator = () => {
           options={{
             title: 'Authentication',
             headerShown: false,
+          }}
+        />
+        
+        <Stack.Screen 
+          name="AccountPending" 
+          component={AccountPendingScreen}
+          options={{
+            title: 'Account Pending',
+            headerShown: false,
+            gestureEnabled: false,
+          }}
+        />
+        
+        <Stack.Screen 
+          name="AccountRequests" 
+          component={AccountRequestsScreen}
+          options={{
+            title: 'Account Requests',
+            headerBackTitleVisible: false,
           }}
         />
         

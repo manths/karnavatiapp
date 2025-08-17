@@ -100,6 +100,31 @@ export const maskMobileNumber = (mobileNumber) => {
   return masked + lastFour;
 };
 
+// Date formatting function (re-exported from dateUtils for backward compatibility)
+export const formatDate = (date) => {
+  if (!date) return '';
+  
+  const d = new Date(date);
+  return d.toLocaleDateString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  });
+};
+
+export const formatDateTime = (date) => {
+  if (!date) return '';
+  
+  const d = new Date(date);
+  return d.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 export const getInitials = (name) => {
   if (!name) return '';
   return name

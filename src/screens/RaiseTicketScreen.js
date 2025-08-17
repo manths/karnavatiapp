@@ -85,6 +85,7 @@ const RaiseTicketScreen = ({ navigation }) => {
         userId: userData.id,
         username: userData.username,
         buildingId: userData.buildingId,
+        houseNumber: userData.houseNumber,
         category,
         priority,
         description: description.trim(),

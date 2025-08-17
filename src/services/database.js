@@ -15,7 +15,9 @@ import {
 import { ref, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage';
 import { db, storage } from './firebase';
 import { APP_CONFIG } from '../constants/config';
+import { USER_STATUS } from '../constants/userRoles';
 import StorageService from './storage';
+import NotificationService from './notificationService';
 
 class DatabaseService {
   // User operations
@@ -24,18 +26,42 @@ class DatabaseService {
       const userRef = collection(db, APP_CONFIG.database.collections.users);
       const docRef = await addDoc(userRef, {
         ...userData,
-        role: userData.role || 'member', // Default role is 'member', can be 'admin' or 'member'
+        role: userData.role || 'member', // Default role is 'member'
+        status: userData.status || 'pending', // Default status is 'pending'
+        firstLogin: true, // Flag to show approval message on first login
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
       
-      // Save to local storage
-      await StorageService.saveUserData({ ...userData, id: docRef.id, role: userData.role || 'member' });
+      // Save to local storage with safe fallbacks
+      const userDataToSave = { 
+        ...userData, 
+        id: docRef.id, 
+        role: userData.role || 'member',
+        status: userData.status || 'pending',
+        firstLogin: true,
+      };
+      
+      await StorageService.saveUserData(userDataToSave);
+      
+      // Send notification to admin about new registration
+      if (userData.username && userData.houseNumber && userData.buildingId) {
+        const notification = NotificationService.notifications.newRegistration(
+          userData.username, 
+          userData.buildingId,
+          userData.houseNumber
+        );
+        await NotificationService.sendLocalNotification(
+          notification.title,
+          notification.body,
+          { userId: docRef.id, type: 'new_registration', userData }
+        );
+      }
       
       return { success: true, id: docRef.id };
     } catch (error) {
       console.error('Error creating user:', error);
-      return { success: false, error: error.message };
+      return { success: false, error: error.message || 'Failed to create user' };
     }
   }
 
@@ -289,6 +315,271 @@ class DatabaseService {
       return result;
     } catch (error) {
       console.error('Error promoting user to admin:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // User status management
+  async updateUserStatus(userId, status) {
+    try {
+      const userRef = doc(db, APP_CONFIG.database.collections.users, userId);
+      
+      // Get current user data for notifications
+      const userDoc = await getDoc(userRef);
+      const userData = userDoc.data();
+      
+      await updateDoc(userRef, {
+        status,
+        updatedAt: serverTimestamp(),
+      });
+      
+      // Send appropriate notification based on status
+      if (userData) {
+        if (status === USER_STATUS.APPROVED) {
+          await NotificationService.sendLocalNotification(
+            NotificationService.notifications.accountApproved.title,
+            NotificationService.notifications.accountApproved.body,
+            { userId, status, type: 'account_approved' }
+          );
+        } else if (status === USER_STATUS.REJECTED) {
+          await NotificationService.sendLocalNotification(
+            NotificationService.notifications.accountRejected.title,
+            NotificationService.notifications.accountRejected.body,
+            { userId, status, type: 'account_rejected' }
+          );
+        }
+      }
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating user status:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getUserRequests(buildingId = null) {
+    try {
+      const usersRef = collection(db, APP_CONFIG.database.collections.users);
+      let q;
+      
+      if (buildingId) {
+        q = query(
+          usersRef,
+          where('buildingId', '==', buildingId),
+          orderBy('createdAt', 'desc')
+        );
+      } else {
+        q = query(
+          usersRef,
+          orderBy('createdAt', 'desc')
+        );
+      }
+      
+      const querySnapshot = await getDocs(q);
+      const requests = [];
+      
+      querySnapshot.forEach((doc) => {
+        requests.push({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate(),
+          updatedAt: doc.data().updatedAt?.toDate(),
+        });
+      });
+      
+      return { success: true, data: requests };
+    } catch (error) {
+      console.error('Error getting user requests:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getPendingRequests(buildingId = null) {
+    try {
+      const usersRef = collection(db, APP_CONFIG.database.collections.users);
+      let q;
+      
+      if (buildingId) {
+        q = query(
+          usersRef,
+          where('buildingId', '==', buildingId),
+          where('status', '==', 'pending'),
+          orderBy('createdAt', 'desc')
+        );
+      } else {
+        q = query(
+          usersRef,
+          where('status', '==', 'pending'),
+          orderBy('createdAt', 'desc')
+        );
+      }
+      
+      const querySnapshot = await getDocs(q);
+      const requests = [];
+      
+      querySnapshot.forEach((doc) => {
+        requests.push({
+          id: doc.id,
+          ...doc.data(),
+          createdAt: doc.data().createdAt?.toDate(),
+          updatedAt: doc.data().updatedAt?.toDate(),
+        });
+      });
+      
+      return { success: true, data: requests };
+    } catch (error) {
+      console.error('Error getting pending requests:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getUserById(userId) {
+    try {
+      const userRef = doc(db, APP_CONFIG.database.collections.users, userId);
+      const docSnap = await getDoc(userRef);
+      
+      if (docSnap.exists()) {
+        const userData = {
+          id: docSnap.id,
+          ...docSnap.data(),
+          createdAt: docSnap.data().createdAt?.toDate(),
+          updatedAt: docSnap.data().updatedAt?.toDate(),
+        };
+        return { success: true, data: userData };
+      } else {
+        return { success: false, error: 'User not found' };
+      }
+    } catch (error) {
+      console.error('Error getting user by ID:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Notification for admin when new user registers
+  async getAdminUsers(buildingId = null) {
+    try {
+      const usersRef = collection(db, APP_CONFIG.database.collections.users);
+      let q;
+      
+      if (buildingId) {
+        q = query(
+          usersRef,
+          where('buildingId', '==', buildingId),
+          where('role', '==', 'admin'),
+          where('status', '==', 'approved')
+        );
+      } else {
+        q = query(
+          usersRef,
+          where('role', '==', 'admin'),
+          where('status', '==', 'approved')
+        );
+      }
+      
+      const querySnapshot = await getDocs(q);
+      const admins = [];
+      
+      querySnapshot.forEach((doc) => {
+        admins.push({
+          id: doc.id,
+          ...doc.data(),
+        });
+      });
+      
+      return { success: true, data: admins };
+    } catch (error) {
+      console.error('Error getting admin users:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Payment Receipt operations
+  async getAllPayments() {
+    try {
+      const paymentsRef = collection(db, APP_CONFIG.database.collections.payments);
+      const q = query(paymentsRef, orderBy('createdAt', 'desc'));
+      
+      const querySnapshot = await getDocs(q);
+      const payments = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      
+      return { success: true, data: payments };
+    } catch (error) {
+      console.error('Error getting all payments:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getUserPayments(userId) {
+    try {
+      const paymentsRef = collection(db, APP_CONFIG.database.collections.payments);
+      const q = query(
+        paymentsRef,
+        where('userId', '==', userId),
+        orderBy('createdAt', 'desc')
+      );
+      
+      const querySnapshot = await getDocs(q);
+      const payments = querySnapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      
+      return { success: true, data: payments };
+    } catch (error) {
+      console.error('Error getting user payments:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async updatePaymentStatus(paymentId, status) {
+    try {
+      const paymentRef = doc(db, APP_CONFIG.database.collections.payments, paymentId);
+      await updateDoc(paymentRef, {
+        status,
+        updatedAt: serverTimestamp(),
+      });
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating payment status:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async savePaymentWithSMS(paymentData, smsDetails) {
+    try {
+      const paymentsRef = collection(db, APP_CONFIG.database.collections.payments);
+      const docRef = await addDoc(paymentsRef, {
+        ...paymentData,
+        smsDetails,
+        status: paymentData.status || 'pending', // Use provided status or default to pending
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      
+      return { success: true, id: docRef.id };
+    } catch (error) {
+      console.error('Error saving payment with SMS:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async verifySMSPayment(paymentId, isVerified) {
+    try {
+      const paymentRef = doc(db, APP_CONFIG.database.collections.payments, paymentId);
+      await updateDoc(paymentRef, {
+        smsVerified: isVerified,
+        status: isVerified ? 'success' : 'failed',
+        verifiedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error verifying SMS payment:', error);
       return { success: false, error: error.message };
     }
   }

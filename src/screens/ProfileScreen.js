@@ -137,7 +137,7 @@ const ProfileScreen = () => {
             />
             <View style={styles.profileInfo}>
               <Title style={styles.username}>{userData.username}</Title>
-              <Text style={styles.buildingId}>Building: {userData.buildingId}</Text>
+              <Text style={styles.buildingId}>{userData.buildingId}-{userData.houseNumber}</Text>
               <Text style={styles.mobile}>
                 {userData.countryCode} {userData.mobileNumber}
               </Text>

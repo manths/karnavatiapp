@@ -199,7 +199,7 @@ const TicketDetailsScreen = ({ route, navigation }) => {
                       </Chip>
                     )}
                   </View>
-                  <Text style={styles.buildingInfo}>Building: {ticket.buildingId}</Text>
+                  <Text style={styles.buildingInfo}>{ticket.buildingId}-{ticket.houseNumber || 'N/A'}</Text>
                   <Text style={styles.timestamp}>
                     Created {getRelativeTime(ticket.createdAt?.toDate?.() || ticket.createdAt)}
                   </Text>

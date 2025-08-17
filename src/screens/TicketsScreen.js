@@ -111,7 +111,7 @@ const TicketsScreen = ({ navigation }) => {
             <View style={styles.userDetails}>
               <Text style={styles.username}>{ticket.username || 'Unknown User'}</Text>
               {viewMode === 'all' && (
-                <Text style={styles.buildingInfo}>Building: {ticket.buildingId || 'Unknown'}</Text>
+                <Text style={styles.buildingInfo}>{ticket.buildingId || 'Unknown'}-{ticket.houseNumber || 'N/A'}</Text>
               )}
               <Text style={styles.timestamp}>
                 {getRelativeTime(ticket.createdAt?.toDate?.() || ticket.createdAt)}

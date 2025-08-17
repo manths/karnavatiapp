@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -24,10 +25,12 @@ import {
 import { Colors } from '../constants/colors';
 import { Layout } from '../constants/layout';
 import { APP_CONFIG } from '../constants/config';
+import { PRODUCTION_CONFIG, ProductionUtils } from '../constants/production';
 import { validateAmount } from '../utils/validation';
 import { formatCurrency, generateTransactionId, createUPIUrl } from '../utils/helpers';
 import DatabaseService from '../services/database';
 import StorageService from '../services/storage';
+import SMSService from '../services/smsService';
 import { useToast } from '../context/ToastContext';
 
 const PaymentScreen = ({ navigation }) => {
@@ -57,6 +60,18 @@ const PaymentScreen = ({ navigation }) => {
   useEffect(() => {
     loadUserData();
   }, []);
+
+  // Reset payment state when screen comes into focus (except on first load)
+  useFocusEffect(
+    React.useCallback(() => {
+      // Only reset if we're in success state and coming back to the screen
+      if (paymentStep === 'payment_success') {
+        setTimeout(() => {
+          resetPayment();
+        }, 100); // Small delay to ensure smooth navigation
+      }
+    }, [paymentStep])
+  );
 
   const loadUserData = async () => {
     const user = await StorageService.getUserData();
@@ -100,50 +115,35 @@ const PaymentScreen = ({ navigation }) => {
         transactionId
       );
 
-      const appUrl = `${upiApp.package}://upi/pay?${upiUrl.split('?')[1]}`;
+      ProductionUtils.log(`Attempting to open UPI payment for ${upiApp.name}`, 'info');
       
-      // Try to open the specific UPI app first
-      const canOpen = await Linking.canOpenURL(appUrl);
+      // Use production-safe UPI opening
+      const result = await ProductionUtils.openUPIUrl(upiUrl, upiApp.name);
       
-      if (canOpen) {
-        await Linking.openURL(appUrl);
+      if (result.success) {
+        showSuccess(`Opening ${upiApp.name} for payment...`);
+        
+        // Show success confirmation after a delay
+        setTimeout(() => {
+          showPaymentConfirmation();
+        }, 2000);
       } else {
-        // Fallback to generic UPI URL
-        const canOpenGeneric = await Linking.canOpenURL(upiUrl);
-        if (canOpenGeneric) {
-          await Linking.openURL(upiUrl);
-        } else {
-          Alert.alert('Error', `${upiApp.name} is not installed on your device`);
-        }
+        showError(result.error || `Unable to open ${upiApp.name}. Please ensure it's installed and try again.`);
       }
 
-      // Show success confirmation after a delay
-      setTimeout(() => {
-        showPaymentConfirmation();
-      }, 2000);
-
     } catch (error) {
-      console.error('Error opening UPI app:', error);
-      Alert.alert('Error', 'Failed to open payment app');
+      ProductionUtils.logError(error, 'UPI Payment');
+      showError('Failed to open payment app. Please try again.');
     }
   };
 
   const showPaymentConfirmation = () => {
-    Alert.alert(
-      'Payment Initiated',
-      'Please complete the payment in your UPI app and then confirm here.',
-      [
-        {
-          text: 'Payment Failed',
-          style: 'cancel',
-          onPress: () => setPaymentStep('enter_amount'),
-        },
-        {
-          text: 'Payment Successful',
-          onPress: handlePaymentSuccess,
-        },
-      ]
-    );
+    showSuccess('Payment initiated successfully! Please complete the payment in your UPI app.');
+    
+    // Auto-navigate back after showing success
+    setTimeout(() => {
+      handlePaymentSuccess();
+    }, 3000);
   };
 
   const handlePaymentSuccess = async () => {
@@ -154,23 +154,28 @@ const PaymentScreen = ({ navigation }) => {
         userId: userData.id,
         username: userData.username,
         buildingId: userData.buildingId,
+        houseNumber: userData.houseNumber,
         amount: parseFloat(amount),
         description: description.trim(),
         transactionId,
         paymentMethod: 'UPI',
-        status: 'completed',
+        upiId: APP_CONFIG.upi.id,
+        status: 'pending', // Will be verified through SMS or admin
+        expectedAmount: parseFloat(amount),
+        expectedUPIId: APP_CONFIG.upi.id,
       };
 
-      const result = await DatabaseService.savePayment(paymentData);
+      const result = await DatabaseService.savePaymentWithSMS(paymentData, null);
       
       if (result.success) {
         setPaymentStep('payment_success');
+        showSuccess('Payment recorded with pending status. It will be verified and approved by admin.');
       } else {
         throw new Error(result.error);
       }
     } catch (error) {
       console.error('Error saving payment:', error);
-      Alert.alert('Error', 'Failed to record payment. Please contact support.');
+      showError('Failed to record payment. Please contact support.');
     } finally {
       setLoading(false);
     }
@@ -199,7 +204,7 @@ const PaymentScreen = ({ navigation }) => {
           error={!!errors.amount}
           left={<TextInput.Icon icon="currency-inr" />}
         />
-        <HelperText type="error" visible={!!errors.amount}>
+        <HelperText type="error" visible={!!errors.amount} style={styles.errorText}>
           {errors.amount}
         </HelperText>
 
@@ -212,7 +217,7 @@ const PaymentScreen = ({ navigation }) => {
           error={!!errors.description}
           placeholder="Monthly Maintenance, Security Fee, etc."
         />
-        <HelperText type="error" visible={!!errors.description}>
+        <HelperText type="error" visible={!!errors.description} style={styles.errorText}>
           {errors.description}
         </HelperText>
 
@@ -225,9 +230,12 @@ const PaymentScreen = ({ navigation }) => {
         <Button
           mode="contained"
           onPress={handleProceedToPayment}
-          style={styles.proceedButton}
+          style={[
+            styles.proceedButton, 
+            (!amount || !description || Object.keys(errors).length > 0) && styles.disabledButton
+          ]}
           labelStyle={styles.proceedButtonText}
-          disabled={!amount || !description}
+          disabled={!amount || !description || Object.keys(errors).length > 0}
         >
           Proceed to Payment
         </Button>
@@ -318,16 +326,34 @@ const PaymentScreen = ({ navigation }) => {
           </View>
 
           <Text style={styles.successMessage}>
-            Your payment has been recorded successfully. You will receive a confirmation shortly.
+            Your payment has been recorded with pending status. It will be verified through SMS or admin approval and updated accordingly.
           </Text>
+
+          <View style={styles.noteContainer}>
+            <Text style={styles.noteTitle}>📱 Note:</Text>
+            <Text style={styles.noteText}>
+              • Your payment is currently pending verification{'\n'}
+              • Admin will review and approve your payment{'\n'}
+              • You can check status in Payment Receipts
+            </Text>
+          </View>
 
           <Button
             mode="contained"
-            onPress={() => navigation.goBack()}
+            onPress={() => navigation.navigate('PaymentReceipts')}
             style={styles.doneButton}
             labelStyle={styles.doneButtonText}
           >
-            Done
+            View Payment Receipts
+          </Button>
+
+          <Button
+            mode="outlined"
+            onPress={() => navigation.goBack()}
+            style={styles.newPaymentButton}
+            labelStyle={styles.newPaymentButtonText}
+          >
+            Back to Home
           </Button>
 
           <Button
@@ -660,6 +686,37 @@ const styles = StyleSheet.create({
     fontSize: Layout.fontSize.md,
     color: Colors.text,
     lineHeight: 24,
+  },
+  errorText: {
+    fontSize: Layout.fontSize.sm,
+    fontWeight: '600',
+    backgroundColor: '#ffebee',
+    padding: Layout.spacing.xs,
+    borderRadius: Layout.borderRadius.sm,
+    marginBottom: Layout.spacing.xs,
+  },
+  disabledButton: {
+    backgroundColor: Colors.lightGray,
+    opacity: 0.6,
+  },
+  noteContainer: {
+    backgroundColor: Colors.lightBlue + '20',
+    padding: Layout.spacing.md,
+    borderRadius: Layout.borderRadius.md,
+    marginVertical: Layout.spacing.md,
+    borderLeftWidth: 4,
+    borderLeftColor: Colors.primary,
+  },
+  noteTitle: {
+    fontSize: Layout.fontSize.md,
+    fontWeight: 'bold',
+    color: Colors.primary,
+    marginBottom: Layout.spacing.sm,
+  },
+  noteText: {
+    fontSize: Layout.fontSize.sm,
+    color: Colors.text,
+    lineHeight: 20,
   },
 });
 

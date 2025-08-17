@@ -5,7 +5,10 @@ export const validateEmail = (email) => {
 
 export const validateMobileNumber = (number) => {
   const mobileRegex = /^[6-9]\d{9}$/;
-  return mobileRegex.test(number);
+  if (!mobileRegex.test(number)) {
+    return { isValid: false, message: 'Mobile number must be 10 digits and start with 6-9' };
+  }
+  return { isValid: true, message: '' };
 };
 
 export const validatePassword = (password) => {
@@ -19,11 +22,11 @@ export const validateUsername = (username) => {
   if (username.length < 3) {
     return { isValid: false, message: 'Username must be at least 3 characters long' };
   }
-  if (username.length > 20) {
-    return { isValid: false, message: 'Username must be less than 20 characters' };
+  if (username.length > 12) {
+    return { isValid: false, message: 'Username must not exceed 12 characters' };
   }
-  if (!/^[a-zA-Z0-9_]+$/.test(username)) {
-    return { isValid: false, message: 'Username can only contain letters, numbers, and underscores' };
+  if (!/^[a-zA-Z0-9\s_]+$/.test(username)) {
+    return { isValid: false, message: 'Username can only contain letters, numbers, spaces, and underscores' };
   }
   return { isValid: true, message: '' };
 };
